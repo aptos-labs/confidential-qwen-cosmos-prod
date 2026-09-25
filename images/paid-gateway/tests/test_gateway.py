@@ -475,6 +475,30 @@ def test_cosmos_text_to_video_is_admitted(size):
 
 
 @pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"generate_sound": "true", "sound_duration": "7.875"}, id="full-189"),
+        pytest.param({"generate_sound": "true"}, id="sound-default-duration"),
+        pytest.param({"generate_sound": "false"}, id="sound-off"),
+        pytest.param(
+            {"num_frames": "48", "generate_sound": "true", "sound_duration": "2"},
+            id="two-seconds",
+        ),
+        pytest.param(
+            {"num_frames": "48", "generate_sound": "true", "sound_duration": "0.5"},
+            id="shorter-than-video",
+        ),
+    ],
+)
+def test_cosmos_video_with_sound_is_admitted(overrides):
+    assert validate_video(form(cosmos_fields(**overrides)), VIDEO_TYPE) == ["text"]
+    body = form(
+        cosmos_fields(**overrides), [("input_reference", JPEG, "image/jpeg", "frame.jpg")]
+    )
+    assert validate_video(body, VIDEO_TYPE) == ["text", "image"]
+
+
+@pytest.mark.parametrize(
     "image,media_type,filename",
     [(PNG, "image/png", "frame.png"), (JPEG, "image/jpeg", "frame.jpg")],
 )
@@ -545,6 +569,37 @@ def test_cosmos_image_to_video_accepts_one_reference(image, media_type, filename
         ),
         pytest.param(
             cosmos_fields(), [("input_reference", PNG, "image/png", "../x.png")], id="traversal"
+        ),
+        pytest.param(cosmos_fields(generate_sound="True"), [], id="sound-flag-capitalized"),
+        pytest.param(cosmos_fields(generate_sound="1"), [], id="sound-flag-one"),
+        pytest.param(cosmos_fields(generate_sound=""), [], id="sound-flag-empty"),
+        pytest.param(cosmos_fields(sound_duration="7.875"), [], id="duration-without-sound"),
+        pytest.param(
+            cosmos_fields(generate_sound="false", sound_duration="2"),
+            [],
+            id="duration-with-sound-off",
+        ),
+        pytest.param(
+            cosmos_fields(generate_sound="true", sound_duration="7.9"),
+            [],
+            id="duration-longer-than-video",
+        ),
+        pytest.param(
+            cosmos_fields(num_frames="48", generate_sound="true", sound_duration="2.5"),
+            [],
+            id="duration-longer-than-short-video",
+        ),
+        pytest.param(
+            cosmos_fields(generate_sound="true", sound_duration="0"), [], id="duration-zero"
+        ),
+        pytest.param(
+            cosmos_fields(generate_sound="true", sound_duration="-1"), [], id="duration-negative"
+        ),
+        pytest.param(
+            cosmos_fields(generate_sound="true", sound_duration="nan"), [], id="duration-nan"
+        ),
+        pytest.param(
+            cosmos_fields(generate_sound="true", sound_duration=" 2"), [], id="duration-space"
         ),
         pytest.param(cosmos_fields(seconds="4"), [], id="unknown-field-seconds"),
         pytest.param(cosmos_fields(width="832"), [], id="unknown-field-width"),

@@ -5,7 +5,9 @@ The gateway forwards the caller's exact ``multipart/form-data`` body to vLLM-Omn
 rejects it. Accepted text fields are ``model``, ``prompt``, ``negative_prompt``,
 ``size`` (required, exactly ``832x480`` or ``1280x720``), ``num_frames`` (required,
 1..189), ``fps`` (24 only), ``num_inference_steps``, ``guidance_scale``,
-``flow_shift``, ``seed``, ``max_sequence_length`` and ``extra_params``.
+``flow_shift``, ``seed``, ``max_sequence_length``, ``generate_sound`` (``true`` or
+``false``), ``sound_duration`` (seconds, only with ``generate_sound=true``, >0 and at most
+the video duration ``num_frames / 24``) and ``extra_params``.
 ``extra_params`` is a strict JSON object limited to the two template booleans and
 ``guardrails``, which may only restate ``true``: guardrails are never disabled per
 request. At most one PNG/JPEG ``input_reference`` file enables image-to-video.
@@ -40,9 +42,12 @@ FIELDS = frozenset(
         "flow_shift",
         "seed",
         "max_sequence_length",
+        "generate_sound",
+        "sound_duration",
         "extra_params",
     }
 )
+SOUND_FLAGS = frozenset({"true", "false"})
 # Plain ASCII decimals only: no whitespace, '+', '_', or non-ASCII digits that
 # Python's int()/float() would silently accept but the model server might not.
 _WHOLE = re.compile(r"-?[0-9]{1,20}")
@@ -143,7 +148,7 @@ def validate_video(body: bytes, content_type: str) -> list[str]:
             invalid()
         if "num_frames" not in fields:
             invalid()
-        number(fields["num_frames"], 1, MAX_FRAMES, whole=True)
+        frames = number(fields["num_frames"], 1, MAX_FRAMES, whole=True)
         if "fps" in fields:
             number(fields["fps"], FPS, FPS, whole=True)
         if "num_inference_steps" in fields:
@@ -155,6 +160,14 @@ def validate_video(body: bytes, content_type: str) -> list[str]:
             number(fields["seed"], -(2**63), 2**63 - 1, whole=True)
         if "max_sequence_length" in fields:
             number(fields["max_sequence_length"], 1, 4096, whole=True)
+        if "generate_sound" in fields and fields["generate_sound"] not in SOUND_FLAGS:
+            invalid()
+        if "sound_duration" in fields:
+            # Audio is muxed into the video MP4, so it may not outlast the video.
+            if fields.get("generate_sound") != "true":
+                invalid()
+            if not 0 < number(fields["sound_duration"], 0, frames / FPS):
+                invalid()
         if "extra_params" in fields:
             extra = strict_json(fields["extra_params"])
             if not isinstance(extra, dict) or set(extra) - EXTRA_PARAMS:
