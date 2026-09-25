@@ -34,7 +34,7 @@ def baseline_bytes(*values):
 def mock_baseline(monkeypatch, *values):
     raw = baseline_bytes(*values)
     monkeypatch.setattr(source_delta, "BASELINE_SHA256", hashlib.sha256(raw).hexdigest())
-    monkeypatch.setattr(source_delta.subprocess, "check_output", lambda *a, **kw: raw)
+    monkeypatch.setattr(source_delta, "read_baseline", lambda: raw)
 
 
 def test_source_inventory_includes_added_deleted_changed_and_empty_files(tmp_path, monkeypatch):
@@ -102,6 +102,12 @@ def test_invalid_bundle_count_or_type_is_rejected(monkeypatch, values):
     mock_baseline(monkeypatch, *values)
     with pytest.raises(RuntimeError):
         source_delta.baseline_sources()
+
+
+def test_vendored_baseline_matches_its_published_digest():
+    raw = source_delta.read_baseline()
+    assert hashlib.sha256(raw).hexdigest() == source_delta.BASELINE_SHA256
+    assert len(source_delta.baseline_sources()) > 0
 
 
 def test_baseline_hash_cannot_be_substituted(monkeypatch):
