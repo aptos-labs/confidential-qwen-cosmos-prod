@@ -1,0 +1,66 @@
+{
+  "format": 1,
+  "upstream_commit": "eb11446b7f2e30ca582f8aff3afe12e9a2e66f6c",
+  "image": "vllm/vllm-omni@sha256:4780186f168af96634917208596675439fa71cb5ed3440a30e8c21ca1defc451",
+  "versions": {
+    "vllm": "0.28.0",
+    "vllm-omni": "0.28.0"
+  },
+  "helper_sha256": "7d1aeb8ee9e5853e52d5f199c8602590cff085dfca5de00947fe7d26b7cafd69",
+  "files": {
+    "engine/messages.py": {
+      "original_sha256": "3d0f294e0e4a467ea2dc1790c926e9e9b16fbb799ff235708d5564a797d59727",
+      "patched_sha256": "813a9e82b42b2c677195128162b8ed0cc3606e4ee8918b5fca50f8dc45d2a4be",
+      "replacements": [
+        {
+          "old": "from vllm_omni.inputs.data import",
+          "new": "from vllm_omni.input_meter import InputMeter\nfrom vllm_omni.inputs.data import"
+        },
+        {
+          "old": "    engine_outputs: OmniRequestOutput\n",
+          "new": "    engine_outputs: OmniRequestOutput\n    input_meter: InputMeter | None = None\n"
+        }
+      ]
+    },
+    "engine/orchestrator.py": {
+      "original_sha256": "4be1024e861893e8f002dc6993538bc8fd4e47be0d259cd4921fc9815019ad68",
+      "patched_sha256": "7b69080a8abde679df2c7e44b703f98ccc2876eae8d74871abac4961a6ebfbf7",
+      "replacements": [
+        {
+          "old": "from vllm_omni.errors import DEFAULT_CLIENT_ERROR_TYPE\n",
+          "new": "from vllm_omni.errors import DEFAULT_CLIENT_ERROR_TYPE\nfrom vllm_omni.input_meter import InputMeter, capture_input_meter\n"
+        },
+        {
+          "old": "    prompt: Any = None\n",
+          "new": "    prompt: Any = None\n    input_meter: InputMeter = field(default_factory=InputMeter)\n"
+        },
+        {
+          "old": "            mm_features=getattr(prompt, \"mm_features\", None),\n",
+          "new": "            mm_features=getattr(prompt, \"mm_features\", None),\n            input_meter=capture_input_meter(prompt, self.stage_pools[stage_id].stage_vllm_config),\n"
+        },
+        {
+          "old": "                            engine_outputs=engine_output,\n                            metrics=None,",
+          "new": "                            engine_outputs=engine_output,\n                            input_meter=req_state.input_meter,\n                            metrics=None,"
+        },
+        {
+          "old": "                    engine_outputs=output,\n                    metrics=stage_metrics,",
+          "new": "                    engine_outputs=output,\n                    input_meter=req_state.input_meter,\n                    metrics=stage_metrics,"
+        }
+      ]
+    },
+    "entrypoints/omni_base.py": {
+      "original_sha256": "18798ad8f08e7cdf4fb20816823ceae40e31b97b58979bbb63cd6d51e84358e0",
+      "patched_sha256": "228be63477d6cba968c26c72a021a43a645bff5ac7982588a5f350edf718cce4",
+      "replacements": [
+        {
+          "old": "from vllm_omni.errors import raise_client_error_or\n",
+          "new": "from vllm_omni.errors import raise_client_error_or\nfrom vllm_omni.input_meter import protect_metrics\n"
+        },
+        {
+          "old": "        return OmniRequestOutput.from_stage_output(\n",
+          "new": "        response_metrics = protect_metrics(response_metrics, result.input_meter)\n        return OmniRequestOutput.from_stage_output(\n"
+        }
+      ]
+    }
+  }
+}

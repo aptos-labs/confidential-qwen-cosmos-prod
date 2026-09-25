@@ -1,0 +1,9 @@
+**
+!Dockerfile
+!.dockerignore
+!entrypoint.sh
+!litellm.yaml
+!paid_gateway/
+!paid_gateway/*.py
+!tests/
+!tests/*.py

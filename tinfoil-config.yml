@@ -1,0 +1,134 @@
+cvm-version: 0.11.0
+shim:
+  upstream-container: litellm
+  upstream-port: 8080
+  paths:
+  - /health/liveliness
+  - /health
+  - /metrics
+  - /v1/models
+  - /v1/chat/completions
+  - /v1/videos/sync
+  dummy-attestation: false
+  publish-attestation: false
+  authenticated: true
+  authenticated-endpoints:
+  - /v1/models
+  - /v1/chat/completions
+  - /v1/videos/sync
+  tls-mode: cert-proxy
+  tls-challenge: dns
+  tls-own-san-domain: true
+  control-plane: https://api.inference.aptoslabs.com/
+  atc: http://10.0.2.2:8399
+cvm-network:
+  inbound-ports:
+  - 443
+cpus: 32
+memory: 524288
+gpus: 8
+models:
+- name: cosmos3-super
+  repo: model@446658f032d4683311af89ce1df1151a7bb3c4da5b5f1ec32d44db7c972e629e
+  mpk: ffcc9863a3e563f44f66c392f9c0a5f4644f0674da6517ece81408be7c8bfcb2_137905762304_6a767ed1-252b-50a1-8a12-ecad0426081e
+- name: qwen3-omni-30b-a3b-instruct
+  repo: Qwen/Qwen3-Omni-30B-A3B-Instruct@26291f793822fb6be9555850f06dfe95f2d7e695
+  mpk: 146b75f36614f6c597c09c5f7b62acd0a99c4f5d21c31a590fbd6ca68d053acc_70530605056_3ac824a9-5ee0-5130-9f87-1b94ff497b11
+networks:
+  models: {}
+  gateway-egress:
+    egress: allowlist
+    allow:
+    - api.inference.aptoslabs.com
+containers:
+- name: litellm
+  image: ghcr.io/aptos-labs/confidential-qwen-minimax-paid-gateway@sha256:8ebdcce6df6f09eaca67cc7ed81f771a9d69df71a815d4de368838027628b442
+  restart: always
+  networks:
+  - models
+  - gateway-egress
+  secrets:
+  - USAGE_REPORTER_SECRET
+  healthcheck:
+    test:
+    - CMD
+    - python3
+    - -c
+    - |
+      import urllib.error
+      import urllib.request
+      urllib.request.urlopen('http://127.0.0.1:8080/health/liveliness', timeout=3).close()
+      try:
+          urllib.request.urlopen('http://127.0.0.1:8080/v1/videos/sync', timeout=3).close()
+      except urllib.error.HTTPError as error:
+          assert error.code == 405 and error.headers.get('Allow') == 'POST'
+      else:
+          raise RuntimeError('Video method guard is missing')
+    interval: 30s
+    timeout: 10s
+    start_period: 60m
+  tmpfs:
+    /tmp: size=2g,mode=1777,exec
+- name: vllm-omni-qwen
+  image: ghcr.io/aptos-labs/confidential-qwen-minimax-qwen-metered@sha256:ae61f2365e44fc21604a9eb34438997db9f1f9ec8a6ea1f4589c906f7ba8311f
+  runtime: nvidia
+  gpus: all
+  ipc: private
+  shm_size: 64g
+  restart: always
+  networks:
+  - models
+  env:
+  - VLLM_WORKER_MULTIPROC_METHOD
+  entrypoint:
+  - /bin/sh
+  - -c
+  command:
+  - |
+    CUDA_VISIBLE_DEVICES=4,5,6,7 exec vllm serve \
+    /tinfoil/mpk/mpk-146b75f36614f6c597c09c5f7b62acd0a99c4f5d21c31a590fbd6ca68d053acc \
+    --omni --trust-remote-code --host=0.0.0.0 --port=8000 \
+    --served-model-name qwen3-omni \
+    --init-timeout 1800 --stage-init-timeout 900 \
+    --stage-overrides '{"1": {"num_replicas": 2, "devices": "1,2"}, "2": {"num_replicas": 1, "devices": "3"}}'
+  healthcheck:
+    test:
+    - CMD
+    - curl
+    - -sf
+    - http://localhost:8000/health
+    interval: 30s
+    timeout: 10s
+    start_period: 60m
+  tmpfs:
+    /tmp: size=20g,mode=1777,exec
+    /root: size=20g,mode=0700,exec
+- name: vllm-omni-cosmos
+  image: vllm/vllm-omni:cosmos3@sha256:970dee6658ea223f615b2438ce41e47f1d5322225482546e6e6bc5d8134f757c
+  runtime: nvidia
+  gpus: all
+  ipc: private
+  shm_size: 64g
+  restart: always
+  networks:
+  - models
+  env:
+  - VLLM_WORKER_MULTIPROC_METHOD
+  - VLLM_OMNI_VIDEO_SYNC_TIMEOUT
+  entrypoint:
+  - /bin/sh
+  - -c
+  command:
+  - HF_HOME=/tinfoil/mpk/mpk-ffcc9863a3e563f44f66c392f9c0a5f4644f0674da6517ece81408be7c8bfcb2/guardrails HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 CUDA_VISIBLE_DEVICES=0,1,2,3 exec vllm serve /tinfoil/mpk/mpk-ffcc9863a3e563f44f66c392f9c0a5f4644f0674da6517ece81408be7c8bfcb2 --omni --trust-remote-code --host=0.0.0.0 --port=8001 --served-model-name cosmos3-super --cfg-parallel-size 2 --tensor-parallel-size 2 --init-timeout 1800
+  healthcheck:
+    test:
+    - CMD
+    - curl
+    - -sf
+    - http://localhost:8001/health
+    interval: 30s
+    timeout: 10s
+    start_period: 60m
+  tmpfs:
+    /tmp: size=20g,mode=1777,exec
+    /root: size=20g,mode=0700,exec

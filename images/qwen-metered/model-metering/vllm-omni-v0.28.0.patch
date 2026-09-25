@@ -1,0 +1,24 @@
+--- a/vllm_omni/engine/messages.py
++++ b/vllm_omni/engine/messages.py
+@@ -8,0 +9 @@
++from vllm_omni.input_meter import InputMeter
+@@ -99,0 +101 @@
++    input_meter: InputMeter | None = None
+--- a/vllm_omni/engine/orchestrator.py
++++ b/vllm_omni/engine/orchestrator.py
+@@ -61,0 +62 @@
++from vllm_omni.input_meter import InputMeter, capture_input_meter
+@@ -207,0 +209 @@
++    input_meter: InputMeter = field(default_factory=InputMeter)
+@@ -779,0 +782 @@
++            input_meter=capture_input_meter(prompt, self.stage_pools[stage_id].stage_vllm_config),
+@@ -1016,0 +1020 @@
++                            input_meter=req_state.input_meter,
+@@ -2012,0 +2017 @@
++                    input_meter=req_state.input_meter,
+--- a/vllm_omni/entrypoints/omni_base.py
++++ b/vllm_omni/entrypoints/omni_base.py
+@@ -31,0 +32 @@
++from vllm_omni.input_meter import protect_metrics
+@@ -754,0 +756 @@
++        response_metrics = protect_metrics(response_metrics, result.input_meter)

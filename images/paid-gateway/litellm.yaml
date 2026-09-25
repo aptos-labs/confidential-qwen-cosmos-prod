@@ -1,0 +1,11 @@
+model_list:
+  - model_name: qwen3-omni
+    litellm_params:
+      model: openai/qwen3-omni
+      api_base: http://vllm-omni-qwen:8000/v1
+  - model_name: cosmos3-super
+    litellm_params:
+      model: openai/cosmos3-super
+      api_base: http://vllm-omni-cosmos:8001/v1
+    model_info:
+      mode: video

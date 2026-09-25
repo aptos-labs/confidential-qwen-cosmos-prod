@@ -1,0 +1,169 @@
+name: Validate runtime images
+
+# PR code is tested without registry, attestation, or deployment privileges.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-runtime-images-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Test image policies and scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out PR source
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+
+      - name: Run workflow and script tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/image-policy-tests"
+          "$RUNNER_TEMP/image-policy-tests/bin/python" -m pip install --no-cache-dir pytest==9.1.1 PyYAML==6.0.3
+          "$RUNNER_TEMP/image-policy-tests/bin/python" -m pytest -q tests
+
+  gateway:
+    name: Test paid gateway
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      IMAGE_CONTEXT: images/paid-gateway
+      MIN_FREE_GIB: '4'
+      SMOKE_KIND: gateway
+      LOCAL_IMAGE: ccs-gateway:ci
+    steps:
+      - name: Check out PR source
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+
+      - name: Require free disk before building
+        id: disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import shutil
+          import sys
+
+          required = int(os.environ["MIN_FREE_GIB"]) * 1024**3
+          paths = ("/var/lib/docker", os.environ["GITHUB_WORKSPACE"], os.environ["RUNNER_TEMP"])
+          for path in paths:
+              free = shutil.disk_usage(path).free
+              print(f"{path}: {free / 1024**3:.2f} GiB free; need {required / 1024**3:g} GiB")
+              if free < required:
+                  print("::error::Insufficient disk. Do not remove preinstalled tools to bypass this gate.")
+                  sys.exit(1)
+          PY
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+
+      - name: Build and run Dockerfile tests
+        id: test
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: ${{ env.IMAGE_CONTEXT }}
+          target: test
+          platforms: linux/amd64
+          no-cache: true
+          push: false
+          load: false
+          provenance: false
+
+      - name: Load the final runtime image locally
+        id: runtime
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: ${{ env.IMAGE_CONTEXT }}
+          target: runtime
+          platforms: linux/amd64
+          push: false
+          load: true
+          provenance: false
+          tags: ${{ env.LOCAL_IMAGE }}
+
+      - name: Smoke the final image without capabilities or network
+        id: smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/smoke_image.py "$SMOKE_KIND" "$LOCAL_IMAGE" --local
+
+  qwen:
+    name: Test metered Qwen
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      IMAGE_CONTEXT: images/qwen-metered
+      MIN_FREE_GIB: '24'
+      SMOKE_KIND: qwen
+      LOCAL_IMAGE: ccs-qwen:ci
+    steps:
+      - name: Check out PR source
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+
+      - name: Require free disk before building
+        id: disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import shutil
+          import sys
+
+          required = int(os.environ["MIN_FREE_GIB"]) * 1024**3
+          paths = ("/var/lib/docker", os.environ["GITHUB_WORKSPACE"], os.environ["RUNNER_TEMP"])
+          for path in paths:
+              free = shutil.disk_usage(path).free
+              print(f"{path}: {free / 1024**3:.2f} GiB free; need {required / 1024**3:g} GiB")
+              if free < required:
+                  print("::error::Insufficient disk. Do not remove preinstalled tools to bypass this gate.")
+                  sys.exit(1)
+          PY
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+
+      - name: Build and run Dockerfile tests
+        id: test
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: ${{ env.IMAGE_CONTEXT }}
+          target: test
+          platforms: linux/amd64
+          no-cache: true
+          push: false
+          load: false
+          provenance: false
+
+      - name: Load the final runtime image locally
+        id: runtime
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: ${{ env.IMAGE_CONTEXT }}
+          target: runtime
+          platforms: linux/amd64
+          push: false
+          load: true
+          provenance: false
+          tags: ${{ env.LOCAL_IMAGE }}
+
+      - name: Smoke the final image without capabilities or network
+        id: smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/smoke_image.py "$SMOKE_KIND" "$LOCAL_IMAGE" --local

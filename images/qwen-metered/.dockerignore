@@ -1,0 +1,10 @@
+**
+!Dockerfile
+!.dockerignore
+!model-metering/
+!model-metering/install.py
+!model-metering/input_meter.py
+!model-metering/manifest.json
+!model-metering/vllm-omni-v0.28.0.patch
+!model-metering/tests/
+!model-metering/tests/*.py

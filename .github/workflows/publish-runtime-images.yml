@@ -1,0 +1,443 @@
+name: Publish runtime images
+run-name: Publish runtime images from reviewed ${{ inputs.source_sha }}
+
+# Manually dispatch on the reviewed main commit (or a tag pointing to it).
+# This publishes images only. It NEVER dispatches a Tinfoil release/deployment.
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Reviewed full 40-character source SHA; must equal the selected workflow ref SHA and be on main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-runtime-images-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+
+jobs:
+  gateway:
+    name: Publish paid gateway
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE_CONTEXT: images/paid-gateway
+      IMAGE_NAME: ghcr.io/aptos-labs/confidential-qwen-cosmos-paid-gateway
+      SMOKE_KIND: gateway
+      MIN_FREE_GIB: '4'
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check out reviewed source without stored credentials
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind checkout, workflow, and main ancestry to the reviewed SHA
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::source_sha must be a full lowercase 40-character commit SHA.'
+            exit 1
+          fi
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$SOURCE_SHA" || "$SOURCE_SHA" != "$GITHUB_SHA" ]]; then
+            echo '::error::Require checkout HEAD == SOURCE_SHA == GITHUB_SHA; dispatch on the reviewed commit.'
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" origin/main; then
+            echo '::error::The reviewed source must be an ancestor of origin/main.'
+            exit 1
+          fi
+          printf 'sha=%s\n' "$actual_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require free disk before building
+        id: disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import shutil
+          import sys
+
+          required = int(os.environ["MIN_FREE_GIB"]) * 1024**3
+          paths = ("/var/lib/docker", os.environ["GITHUB_WORKSPACE"], os.environ["RUNNER_TEMP"])
+          for path in paths:
+              free = shutil.disk_usage(path).free
+              print(f"{path}: {free / 1024**3:.2f} GiB free; need {required / 1024**3:g} GiB")
+              if free < required:
+                  print("::error::Insufficient disk. Release blocked; do not remove preinstalled tools to bypass this gate.")
+                  sys.exit(1)
+          PY
+
+      - name: Record actual source, revision, pinned base, and source delta
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          import subprocess
+
+          context = os.environ["IMAGE_CONTEXT"]
+          dockerfile = pathlib.Path(context, "Dockerfile").read_text()
+          first_from = next(line.strip() for line in dockerfile.splitlines()
+                            if line.strip().upper().startswith("FROM "))
+          match = re.fullmatch(r"FROM (\S+@(sha256:[0-9a-f]{64})) AS [\w-]+", first_from, re.IGNORECASE)
+          if not match:
+              raise SystemExit("First Dockerfile base must be pinned by a full sha256 digest")
+          base_image, base_digest = match.groups()
+          revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"base_image={base_image}\nbase_digest={base_digest}\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"### {os.environ['IMAGE_NAME']}\n"
+                            f"- Source: {os.environ['SOURCE_URL']}\n"
+                            f"- Actual revision: `{revision}`\n"
+                            f"- Context: `{context}`; targets: `test` then `runtime`\n"
+                            f"- Pinned base: `{base_image}`\n\n")
+          PY
+          python3 scripts/source_delta.py >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+
+      - name: Build and run Dockerfile tests before registry access
+        id: test
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: ${{ env.IMAGE_CONTEXT }}
+          target: test
+          platforms: linux/amd64
+          no-cache: true
+          push: false
+          load: false
+          provenance: false
+
+      - name: Log in for publication only after tests pass
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the tested source runtime
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: ${{ env.IMAGE_CONTEXT }}
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          # The source tag is a locator, NEVER proof of the image that passed smoke.
+          tags: ${{ env.IMAGE_NAME }}:source-${{ steps.source.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ env.SOURCE_URL }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+            org.opencontainers.image.base.name=${{ steps.metadata.outputs.base_image }}
+            org.opencontainers.image.base.digest=${{ steps.metadata.outputs.base_digest }}
+
+      - name: Pull and smoke the exact published digest
+        id: smoke
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo '::error::Missing or invalid build digest'; exit 1; }
+          image_ref="$IMAGE_NAME@$DIGEST"
+          docker pull "$image_ref"
+          python3 scripts/smoke_image.py "$SMOKE_KIND" "$image_ref"
+          printf '\nPublished and smoke-tested: `%s`\n' "$image_ref" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest the actual workflow source and published digest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  qwen:
+    name: Publish metered Qwen
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE_CONTEXT: images/qwen-metered
+      IMAGE_NAME: ghcr.io/aptos-labs/confidential-qwen-cosmos-qwen-metered
+      SMOKE_KIND: qwen
+      MIN_FREE_GIB: '24'
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check out reviewed source without stored credentials
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind checkout, workflow, and main ancestry to the reviewed SHA
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::source_sha must be a full lowercase 40-character commit SHA.'
+            exit 1
+          fi
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$SOURCE_SHA" || "$SOURCE_SHA" != "$GITHUB_SHA" ]]; then
+            echo '::error::Require checkout HEAD == SOURCE_SHA == GITHUB_SHA; dispatch on the reviewed commit.'
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" origin/main; then
+            echo '::error::The reviewed source must be an ancestor of origin/main.'
+            exit 1
+          fi
+          printf 'sha=%s\n' "$actual_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require free disk before building
+        id: disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import shutil
+          import sys
+
+          required = int(os.environ["MIN_FREE_GIB"]) * 1024**3
+          paths = ("/var/lib/docker", os.environ["GITHUB_WORKSPACE"], os.environ["RUNNER_TEMP"])
+          for path in paths:
+              free = shutil.disk_usage(path).free
+              print(f"{path}: {free / 1024**3:.2f} GiB free; need {required / 1024**3:g} GiB")
+              if free < required:
+                  print("::error::Insufficient disk. Release blocked; do not remove preinstalled tools to bypass this gate.")
+                  sys.exit(1)
+          PY
+
+      - name: Record actual source, revision, pinned base, and source delta
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          import subprocess
+
+          context = os.environ["IMAGE_CONTEXT"]
+          dockerfile = pathlib.Path(context, "Dockerfile").read_text()
+          first_from = next(line.strip() for line in dockerfile.splitlines()
+                            if line.strip().upper().startswith("FROM "))
+          match = re.fullmatch(r"FROM (\S+@(sha256:[0-9a-f]{64})) AS [\w-]+", first_from, re.IGNORECASE)
+          if not match:
+              raise SystemExit("First Dockerfile base must be pinned by a full sha256 digest")
+          base_image, base_digest = match.groups()
+          revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"base_image={base_image}\nbase_digest={base_digest}\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"### {os.environ['IMAGE_NAME']}\n"
+                            f"- Source: {os.environ['SOURCE_URL']}\n"
+                            f"- Actual revision: `{revision}`\n"
+                            f"- Context: `{context}`; targets: `test` then `runtime`\n"
+                            f"- Pinned base: `{base_image}`\n\n")
+          PY
+          python3 scripts/source_delta.py >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+
+      - name: Build and run Dockerfile tests before registry access
+        id: test
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: ${{ env.IMAGE_CONTEXT }}
+          target: test
+          platforms: linux/amd64
+          no-cache: true
+          push: false
+          load: false
+          provenance: false
+
+      - name: Log in for publication only after tests pass
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the tested source runtime
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: ${{ env.IMAGE_CONTEXT }}
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          # The source tag is a locator, NEVER proof of the image that passed smoke.
+          tags: ${{ env.IMAGE_NAME }}:source-${{ steps.source.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ env.SOURCE_URL }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+            org.opencontainers.image.base.name=${{ steps.metadata.outputs.base_image }}
+            org.opencontainers.image.base.digest=${{ steps.metadata.outputs.base_digest }}
+
+      - name: Pull and smoke the exact published digest
+        id: smoke
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo '::error::Missing or invalid build digest'; exit 1; }
+          image_ref="$IMAGE_NAME@$DIGEST"
+          docker pull "$image_ref"
+          python3 scripts/smoke_image.py "$SMOKE_KIND" "$image_ref"
+          printf '\nPublished and smoke-tested: `%s`\n' "$image_ref" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest the actual workflow source and published digest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  anonymous_pull:
+    name: Release gate - anonymous digest pulls
+    # A fresh GitHub-hosted runner, NOT a step on either logged-in builder.
+    # No packages permission/token, no login action, no shared Docker config/cache.
+    needs: [gateway, qwen]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      GATEWAY_IMAGE: ghcr.io/aptos-labs/confidential-qwen-cosmos-paid-gateway
+      QWEN_IMAGE: ghcr.io/aptos-labs/confidential-qwen-cosmos-qwen-metered
+      GATEWAY_DIGEST: ${{ needs.gateway.outputs.digest }}
+      QWEN_DIGEST: ${{ needs.qwen.outputs.digest }}
+      # This runner retains both pulls: gateway 4 GiB + Qwen 24 GiB.
+      MIN_FREE_GIB: '28'
+    steps:
+      - name: Check out the same reviewed smoke script
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind checkout, workflow, and main ancestry to the reviewed SHA
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::source_sha must be a full lowercase 40-character commit SHA.'
+            exit 1
+          fi
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$SOURCE_SHA" || "$SOURCE_SHA" != "$GITHUB_SHA" ]]; then
+            echo '::error::Require checkout HEAD == SOURCE_SHA == GITHUB_SHA; dispatch on the reviewed commit.'
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" origin/main; then
+            echo '::error::The reviewed source must be an ancestor of origin/main.'
+            exit 1
+          fi
+          printf 'sha=%s\n' "$actual_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Create an empty anonymous Docker configuration
+        id: anonymous_config
+        shell: bash
+        run: |
+          set -euo pipefail
+          anonymous_config="$(mktemp -d "$RUNNER_TEMP/anonymous-docker.XXXXXX")"
+          chmod 700 "$anonymous_config"
+          test -z "$(ls -A "$anonymous_config")"
+          printf 'DOCKER_CONFIG=%s\n' "$anonymous_config" >> "$GITHUB_ENV"
+          # An inherited context/host or auth JSON must not redirect/authenticate pulls.
+          printf 'DOCKER_AUTH_CONFIG=\nDOCKER_CONTEXT=\nDOCKER_HOST=\n' >> "$GITHUB_ENV"
+          cat >> "$GITHUB_STEP_SUMMARY" <<'TEXT'
+          ### Anonymous release gate
+          Both published digests must pull and pass smoke without registry credentials.
+          New GHCR packages may be private: an owner must change each package's visibility
+          to **Public** in the GitHub package settings UI and rerun this workflow.
+          Any gate failure keeps release blocked. A tag or an authenticated pull is not proof.
+          This workflow does not create a Tinfoil release or deploy anything.
+          TEXT
+
+      - name: Require free disk for both anonymous pulls
+        id: disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import shutil
+          import sys
+
+          required = int(os.environ["MIN_FREE_GIB"]) * 1024**3
+          paths = ("/var/lib/docker", os.environ["GITHUB_WORKSPACE"], os.environ["RUNNER_TEMP"])
+          for path in paths:
+              free = shutil.disk_usage(path).free
+              print(f"{path}: {free / 1024**3:.2f} GiB free; need {required / 1024**3:g} GiB")
+              if free < required:
+                  print("::error::Insufficient disk. Release blocked; do not remove preinstalled tools to bypass this gate.")
+                  sys.exit(1)
+          PY
+
+      - name: Anonymously pull and smoke both exact output digests
+        id: anonymous_smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DOCKER_CONFIG"
+          test -d "$DOCKER_CONFIG"
+          test -z "$(ls -A "$DOCKER_CONFIG")"
+          [[ "$GATEWAY_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo '::error::Invalid gateway digest'; exit 1; }
+          [[ "$QWEN_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo '::error::Invalid Qwen digest'; exit 1; }
+          gateway_ref="$GATEWAY_IMAGE@$GATEWAY_DIGEST"
+          qwen_ref="$QWEN_IMAGE@$QWEN_DIGEST"
+          docker pull "$gateway_ref"
+          python3 scripts/smoke_image.py gateway "$gateway_ref"
+          docker pull "$qwen_ref"
+          python3 scripts/smoke_image.py qwen "$qwen_ref"
+          printf '\nAnonymous digest verification passed for both:\n- `%s`\n- `%s`\n' \
+            "$gateway_ref" "$qwen_ref" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep release blocked when verification fails
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          echo '::error::Anonymous verification failed. Release remains blocked. For private packages, an owner must set visibility to Public in the GHCR UI, then rerun this workflow.'
+          echo '## BLOCKED: anonymous digest verification did not pass; do not release or deploy.' >> "$GITHUB_STEP_SUMMARY"
+          exit 1

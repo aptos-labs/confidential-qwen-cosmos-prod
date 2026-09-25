@@ -1,0 +1,32 @@
+# Environment files (never commit secrets)
+.env
+.env.*
+*.env
+
+# Secret files
+*.secret
+*.key
+*.pem
+credentials.json
+secrets.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Python development artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
