@@ -110,6 +110,10 @@ def request_options(value: dict[str, Any]) -> None:
         ("top_k", -1, 2**31 - 1),
         ("seed", -(2**63), 2**63 - 1),
         ("top_logprobs", 0, 20),
+        # vLLM priority scheduling. The router strips any client-supplied value
+        # and injects 1 when a key passes its soft per-minute limit, so only a
+        # small non-negative range is ever legitimate.
+        ("priority", 0, 10),
     ):
         if name in value and (type(value[name]) is not int or not low <= value[name] <= high):
             fail_request()
@@ -205,6 +209,7 @@ def normalize_chat(value: Any) -> tuple[dict[str, Any], list[str], set[str]]:
         "response_format",
         "logprobs",
         "top_logprobs",
+        "priority",
     }
     if not isinstance(value, dict) or set(value) - allowed or value.get("model") != QWEN:
         fail_request()

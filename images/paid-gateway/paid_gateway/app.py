@@ -45,6 +45,14 @@ VIDEO_PATH = "/v1/videos/sync"
 MAX_EVENT = 4 * 1024 * 1024
 GUARDRAIL_ERROR_LIMIT = 64 * 1024
 CONTENT_POLICY_MESSAGE = "Request was blocked by the model's safety guardrails."
+# Requests generating at once, per model, across all callers. vLLM batches Qwen
+# requests, so the gateway only needs a coarse cap; the router applies per-key
+# rate limits and sheds load when the engine queue grows. One Cosmos video
+# occupies all four of its GPUs (TP=2 x CFG=2), so video runs one at a time.
+CONCURRENCY: Final = {QWEN: 64, VIDEO: 1}
+# Requests allowed to wait for a free slot before the gateway answers 429 busy.
+# A short video queue turns back-to-back submissions into waits, not rejections.
+QUEUE_DEPTH: Final = {QWEN: 0, VIDEO: 4}
 PRODUCTION_MODELS: Final = frozenset({QWEN, VIDEO})
 
 
@@ -312,7 +320,8 @@ class PaidGateway:
             timeout=httpx.Timeout(1800, connect=10), trust_env=False
         )
         self.closed = False
-        self.limits = {QWEN: asyncio.Semaphore(4), VIDEO: asyncio.Semaphore(1)}
+        self.limits = {model: asyncio.Semaphore(n) for model, n in CONCURRENCY.items()}
+        self.admitted = {model: 0 for model in CONCURRENCY}
         self.targets = {
             QWEN: "http://vllm-omni-qwen:8000/v1/chat/completions",
             VIDEO: "http://vllm-omni-cosmos:8001/v1/videos/sync",
@@ -396,13 +405,21 @@ class PaidGateway:
                 scope, receive, send
             )
             return
-        semaphore = self.limits[model]
-        if semaphore.locked():
+        if self.admitted[model] >= CONCURRENCY[model] + QUEUE_DEPTH[model]:
             await JSONResponse(
                 {"error": {"code": "busy"}}, status_code=429, headers={"Retry-After": "1"}
             )(scope, receive, send)
             return
-        async with semaphore:
+        self.admitted[model] += 1
+        try:
+            await self._admitted(request, scope, receive, send, model)
+        finally:
+            self.admitted[model] -= 1
+
+    async def _admitted(
+        self, request: Request, scope: Scope, receive: Receive, send: Send, model: str
+    ) -> None:
+        async with self.limits[model]:
             try:
                 values = request.headers.getlist("authorization")
                 if len(values) != 1 or not values[0].startswith("Bearer "):

@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from paid_gateway.app import PaidGateway
 from paid_gateway.client import _BILLING_ROUTE_ABSENT, BillingClient, GatewayError
-from paid_gateway.protocol import QWEN, normalize_chat
+from paid_gateway.protocol import QWEN, VIDEO, normalize_chat
 from paid_gateway.video_request import validate_video
 
 KEY = "synthetic-internal-key"
@@ -1478,5 +1478,120 @@ def test_qwen_upstream_guardrail_400_remains_upstream_failed():
         assert result.json()["error"]["type"] == "inference_error"
         assert [op for op, _ in billing.calls] == ["admit", "settle"]
         assert billing.calls[-1][1]["reason"] == "cancelled"
+
+    asyncio.run(case())
+
+
+def test_router_injected_priority_is_forwarded_to_qwen():
+    # The router adds "priority": 1 once a key passes its soft per-minute limit.
+    async def case():
+        body = payload()
+        body["priority"] = 1
+        result, _, sent = await invoke(body)
+        assert result.status_code == 200
+        assert json.loads(sent[0].content)["priority"] == 1
+
+    asyncio.run(case())
+
+
+@pytest.mark.parametrize("value", [-1, 11, 1.0, True, "1", None])
+def test_out_of_range_priority_is_rejected_before_admission(value):
+    async def case():
+        body = payload()
+        body["priority"] = value
+        result, billing, sent = await invoke(body)
+        assert result.status_code == 400 and not billing.calls and not sent
+
+    asyncio.run(case())
+
+
+class _Held:
+    """Upstream transport that parks every request until released."""
+
+    def __init__(self, response):
+        self.response = response
+        self.release = asyncio.Event()
+        self.started = 0
+
+    async def handler(self, request):
+        self.started += 1
+        await self.release.wait()
+        return self.response()
+
+
+async def _flood(gateway, n, post):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(gateway), base_url="https://gateway.test"
+    ) as client:
+        return await asyncio.gather(*(post(client) for _ in range(n)))
+
+
+def test_qwen_runs_concurrency_limit_at_once_then_answers_busy():
+    from paid_gateway.app import CONCURRENCY, QUEUE_DEPTH
+
+    limit = CONCURRENCY[QWEN] + QUEUE_DEPTH[QWEN]
+    assert limit >= 64
+
+    async def case():
+        held = _Held(lambda: httpx.Response(200, json=output()))
+        upstream = httpx.AsyncClient(transport=httpx.MockTransport(held.handler))
+        gateway = PaidGateway(downstream, FakeBilling(), upstream)
+
+        async def post(client):
+            return await client.post(
+                "/v1/chat/completions",
+                json=payload(),
+                headers={"Authorization": "Bearer " + KEY},
+            )
+
+        task = asyncio.create_task(_flood(gateway, limit + 3, post))
+        for _ in range(500):
+            if held.started == CONCURRENCY[QWEN]:
+                break
+            await asyncio.sleep(0.01)
+        assert held.started == CONCURRENCY[QWEN]
+        held.release.set()
+        results = await task
+        codes = sorted(r.status_code for r in results)
+        assert codes.count(200) == limit and codes.count(429) == 3
+        assert gateway.admitted[QWEN] == 0
+        await upstream.aclose()
+
+    asyncio.run(case())
+
+
+def test_cosmos_queues_behind_one_running_video_then_answers_busy():
+    from paid_gateway.app import CONCURRENCY, QUEUE_DEPTH
+
+    assert CONCURRENCY[VIDEO] == 1
+    queued = QUEUE_DEPTH[VIDEO]
+
+    async def case():
+        held = _Held(lambda: httpx.Response(400, json=GUARDRAIL_BODY))
+        upstream = httpx.AsyncClient(transport=httpx.MockTransport(held.handler))
+        gateway = PaidGateway(downstream, FakeBilling(), upstream)
+
+        async def post(client):
+            return await client.post(
+                "/v1/videos/sync",
+                content=form(cosmos_fields()),
+                headers={"Authorization": "Bearer " + KEY, "Content-Type": VIDEO_TYPE},
+            )
+
+        task = asyncio.create_task(_flood(gateway, 1 + queued + 2, post))
+        for _ in range(500):
+            if held.started == 1 and gateway.admitted[VIDEO] == 1 + queued:
+                break
+            await asyncio.sleep(0.01)
+        # Only one video reaches the engine; the rest wait instead of failing.
+        assert held.started == 1 and gateway.admitted[VIDEO] == 1 + queued
+        held.release.set()
+        results = await task
+        codes = [r.status_code for r in results]
+        assert codes.count(429) == 2
+        assert codes.count(400) == 1 + queued
+        assert held.started == 1 + queued
+        assert gateway.admitted[VIDEO] == 0
+        await upstream.aclose()
 
     asyncio.run(case())
