@@ -1,4 +1,9 @@
-"""Show readable source changes relative to the immutable v0.0.5 bundle."""
+"""Show readable source changes relative to the immutable v0.0.5 bundle.
+
+v0.0.5 was released from the repository now archived as
+aptos-labs/confidential-qwen-minimax-prod-archive. Its tinfoil-config.yml is vendored under
+scripts/baselines/ and pinned by BASELINE_SHA256, so the baseline does not depend on git history.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +12,10 @@ import difflib
 import hashlib
 import json
 import re
-import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+BASELINE_PATH = ROOT / "scripts/baselines/v0.0.5-tinfoil-config.yml"
 BASELINE_SHA256 = "14cec7260731d54d538b75e2d06e5072029c4be3549f4c88dd962eccc9cf8111"
 
 
@@ -37,8 +42,12 @@ def unique_sources(pairs: list[tuple[str, str]]) -> dict[str, str]:
     return result
 
 
+def read_baseline() -> bytes:
+    return BASELINE_PATH.read_bytes()
+
+
 def baseline_sources() -> dict[str, str]:
-    raw = subprocess.check_output(["git", "show", "v0.0.5:tinfoil-config.yml"], cwd=ROOT)
+    raw = read_baseline()
     if hashlib.sha256(raw).hexdigest() != BASELINE_SHA256:
         raise RuntimeError("v0.0.5 runtime does not match its published digest")
     bundles = re.findall(r'base64\.b64decode\("""\s*([A-Za-z0-9+/=\s]+)"""\)\)', raw.decode())
