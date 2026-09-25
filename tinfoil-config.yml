@@ -90,6 +90,7 @@ containers:
     --omni --trust-remote-code --host=0.0.0.0 --port=8000 \
     --served-model-name qwen3-omni \
     --init-timeout 1800 --stage-init-timeout 900 \
+    --scheduling-policy=priority \
     --stage-overrides '{"1": {"num_replicas": 2, "devices": "1,2"}, "2": {"num_replicas": 1, "devices": "3"}}'
   healthcheck:
     test:
