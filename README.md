@@ -33,8 +33,8 @@ one model volume.
 
 ## Cosmos3-Super video API
 
-`POST /v1/videos/sync` with `multipart/form-data`, returning `video/mp4` (H.264, 24 fps, no
-audio track). The gateway forwards the body unchanged after validating it:
+`POST /v1/videos/sync` with `multipart/form-data`, returning `video/mp4` (H.264, 24 fps; with
+`generate_sound=true`, also a 48 kHz stereo AAC track). The gateway forwards the body unchanged after validating it:
 
 - `model` = `cosmos3-super`; `prompt` required; optional `negative_prompt`.
 - `size` required: `832x480` or `1280x720`.
@@ -42,6 +42,8 @@ audio track). The gateway forwards the body unchanged after validating it:
 - Optional `num_inference_steps` (1–50), `guidance_scale` and `flow_shift` (0–32), `seed`,
   `max_sequence_length` (1–4096).
 - Image-to-video: at most one `input_reference` file, PNG or JPEG.
+- Sound: `generate_sound` (`true`/`false`, default off) and, only with `true`, optional
+  `sound_duration` in seconds (greater than 0, at most `num_frames / 24`).
 - Optional `extra_params` JSON with `use_resolution_template` / `use_duration_template`
   booleans and `guardrails`, which may only be `true`.
 
