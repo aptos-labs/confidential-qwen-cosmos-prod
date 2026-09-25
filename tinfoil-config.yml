@@ -42,7 +42,7 @@ networks:
     - api.inference.aptoslabs.com
 containers:
 - name: litellm
-  image: ghcr.io/aptos-labs/confidential-qwen-minimax-paid-gateway@sha256:8ebdcce6df6f09eaca67cc7ed81f771a9d69df71a815d4de368838027628b442
+  image: ghcr.io/aptos-labs/confidential-qwen-cosmos-paid-gateway@sha256:01a467efaad45e657277f9ea2c1a9cf87c3ae232159758f1de456e180fbd6c24
   restart: always
   networks:
   - models
@@ -70,7 +70,7 @@ containers:
   tmpfs:
     /tmp: size=2g,mode=1777,exec
 - name: vllm-omni-qwen
-  image: ghcr.io/aptos-labs/confidential-qwen-minimax-qwen-metered@sha256:ae61f2365e44fc21604a9eb34438997db9f1f9ec8a6ea1f4589c906f7ba8311f
+  image: ghcr.io/aptos-labs/confidential-qwen-cosmos-qwen-metered@sha256:ea2a5aad4fea75e450392ee79a676f6cc2da391df429e2386d8c4885e8240471
   runtime: nvidia
   gpus: all
   ipc: private
