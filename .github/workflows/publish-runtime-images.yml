@@ -34,6 +34,7 @@ jobs:
       attestations: write
     env:
       IMAGE_CONTEXT: images/paid-gateway
+      IMAGE_DESCRIPTION: "Paid LiteLLM gateway for the Qwen3-Omni + Cosmos3-Super confidential-inference CVM: CCS admission, usage metering, and fail-closed video passthrough."
       IMAGE_NAME: ghcr.io/aptos-labs/confidential-qwen-cosmos-paid-gateway
       SMOKE_KIND: gateway
       MIN_FREE_GIB: '4'
@@ -156,6 +157,9 @@ jobs:
             org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
             org.opencontainers.image.base.name=${{ steps.metadata.outputs.base_image }}
             org.opencontainers.image.base.digest=${{ steps.metadata.outputs.base_digest }}
+            org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
+          annotations: |
+            index:org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
 
       - name: Pull and smoke the exact published digest
         id: smoke
@@ -188,6 +192,7 @@ jobs:
       attestations: write
     env:
       IMAGE_CONTEXT: images/qwen-metered
+      IMAGE_DESCRIPTION: "vLLM-Omni server for Qwen3-Omni with hash-checked usage metering, for the confidential-inference CVM."
       IMAGE_NAME: ghcr.io/aptos-labs/confidential-qwen-cosmos-qwen-metered
       SMOKE_KIND: qwen
       MIN_FREE_GIB: '24'
@@ -310,6 +315,9 @@ jobs:
             org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
             org.opencontainers.image.base.name=${{ steps.metadata.outputs.base_image }}
             org.opencontainers.image.base.digest=${{ steps.metadata.outputs.base_digest }}
+            org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
+          annotations: |
+            index:org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
 
       - name: Pull and smoke the exact published digest
         id: smoke

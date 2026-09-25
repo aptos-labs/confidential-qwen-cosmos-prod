@@ -344,8 +344,15 @@ class WorkflowPolicyTests(unittest.TestCase):
                     "org.opencontainers.image.base.name=${{ steps.metadata.outputs.base_image }}",
                     "org.opencontainers.image.base.digest="
                     "${{ steps.metadata.outputs.base_digest }}",
+                    "org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}",
                 ],
             )
+            self.assertEqual(
+                step_by_id(job, "build")["with"]["annotations"].splitlines(),
+                ["index:org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}"],
+            )
+            description = job["env"]["IMAGE_DESCRIPTION"]
+            self.assertTrue(0 < len(description) <= 200, description)
             metadata = step_by_id(job, "metadata")
             self.assertLess(
                 job["steps"].index(metadata), job["steps"].index(step_by_id(job, "test"))
