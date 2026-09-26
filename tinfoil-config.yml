@@ -120,7 +120,7 @@ containers:
   - /bin/sh
   - -c
   command:
-  - HF_HOME=/tinfoil/mpk/mpk-ffcc9863a3e563f44f66c392f9c0a5f4644f0674da6517ece81408be7c8bfcb2/guardrails HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 CUDA_VISIBLE_DEVICES=0,1,2,3 exec vllm serve /tinfoil/mpk/mpk-ffcc9863a3e563f44f66c392f9c0a5f4644f0674da6517ece81408be7c8bfcb2 --omni --trust-remote-code --host=0.0.0.0 --port=8001 --served-model-name cosmos3-super --cfg-parallel-size 2 --tensor-parallel-size 2 --init-timeout 1800
+  - HF_HOME=/tinfoil/mpk/mpk-ffcc9863a3e563f44f66c392f9c0a5f4644f0674da6517ece81408be7c8bfcb2/guardrails HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 CUDA_VISIBLE_DEVICES=0,1,2,3 exec vllm serve /tinfoil/mpk/mpk-ffcc9863a3e563f44f66c392f9c0a5f4644f0674da6517ece81408be7c8bfcb2 --omni --trust-remote-code --host=0.0.0.0 --port=8001 --served-model-name cosmos3-super --cfg-parallel-size 2 --tensor-parallel-size 2 --init-timeout 1800 --no-guardrails
   healthcheck:
     test:
     - CMD
