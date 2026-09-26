@@ -45,13 +45,14 @@ one model volume.
 - Sound: `generate_sound` (`true`/`false`, default off) and, only with `true`, optional
   `sound_duration` in seconds (greater than 0, at most `num_frames / 24`).
 - Optional `extra_params` JSON with `use_resolution_template` / `use_duration_template`
-  booleans and `guardrails`, which may only be `true`.
+  booleans and `guardrails`, which may only be `true` (a no-op, see below).
 
-**Guardrails are always on.** The server runs without `--no-guardrails`, and the gateway
-rejects any request that tries to disable them. The guardrail models
-(`nvidia/Cosmos-1.0-Guardrail`, `google/siglip-so400m-patch14-384`,
-`Qwen/Qwen3Guard-Gen-0.6B`) load offline from the measured model volume.
-Guardrail-blocked requests return HTTP 400 `content_policy_violation` and are not billed.
+**Guardrails are off (since v0.0.4).** The server runs with `--no-guardrails`: there is no
+prompt check (blocklist / Qwen3Guard) and no output face blur. Cosmos3-Super is licensed
+under OpenMDW-1.1, which places no guardrail requirement on use or outputs; responsibility
+for generated content rests with the operator. The guardrail models stay in the measured
+model volume but are not loaded. The gateway still maps an upstream guardrail rejection to
+HTTP 400 `content_policy_violation` (not billed), which no longer occurs.
 
 Staging on the production shape (2026-09-25): 720p/189 frames in about 230–260 s, 480p in
 about 75 s; Qwen latency was unaffected while Cosmos generated.
